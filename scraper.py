@@ -185,6 +185,39 @@ def _resolve(source_url: str) -> dict | None:
             except Exception:
                 continue
 
+def _resolve(source_url: str) -> dict | None:
+    if not source_url:
+        return None
+
+    # API sometimes returns URL-like paths instead of absolute URLs.
+    if source_url.startswith("//"):
+        source_url = "https:" + source_url
+    elif source_url.startswith("/"):
+        source_url = urljoin("https://allanime.to", source_url)
+
+    # direct stream links
+    if ".m3u8" in source_url:
+        return {"url": source_url, "type": "hls"}
+    if ".mp4" in source_url:
+        return {"url": source_url, "type": "mp4"}
+
+    for base in ("https://allanime.to", "https://allanime.day"):
+        headers = {**HEADERS, "Referer": base}
+        try:
+            candidate = source_url if source_url.startswith("http") else urljoin(base, source_url)
+            res = requests.get(candidate, headers=headers, timeout=12)
+            text = res.text
+
+            m3u8 = re.search(r'(https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)', text)
+            if m3u8:
+                return {"url": m3u8.group(1), "type": "hls"}
+
+            mp4 = re.search(r'(https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)', text)
+            if mp4:
+                return {"url": mp4.group(1), "type": "mp4"}
+        except Exception:
+            continue
+
     return None
 
 
