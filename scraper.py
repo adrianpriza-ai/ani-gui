@@ -1,12 +1,40 @@
 import re
+from urllib.parse import urljoin
+
 import requests
 
-ALLANIME_API = "https://api.allanime.day/api"
-ANILIST_API  = "https://graphql.anilist.co"
+ALLANIME_ENDPOINTS = [
+    "https://api.allanime.day/api",
+    "https://allanime.day/api",
+    "https://api.allanime.to/api",
+    "https://allanime.to/api",
+    "https://allanime.day/allanimeapi",
+    "https://allanime.to/allanimeapi",
+]
+ANILIST_API = "https://graphql.anilist.co"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    "Referer":    "https://allanime.day",
 }
+
+
+def _post_allanime(query: str, variables: dict) -> dict:
+    payload = {"query": query, "variables": variables}
+    last_error = None
+    for endpoint in ALLANIME_ENDPOINTS:
+        headers = {**HEADERS, "Referer": endpoint.rsplit("/", 1)[0]}
+        try:
+            res = requests.post(endpoint, json=payload, headers=headers, timeout=12)
+            if res.ok:
+                data = res.json()
+                if "data" in data:
+                    return data
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+    return {}
+
 
 # ── Search ──────────────────────────────────────────────────────────────────
 
@@ -23,14 +51,14 @@ def search_anime(query: str, translation_type: str = "sub") -> list:
     variables = {
         "search": {"query": query, "allowAdult": False},
         "limit": 20,
-        "page":  1,
+        "page": 1,
     }
     try:
-        r = requests.post(ALLANIME_API, json={"query": gql, "variables": variables},
-                          headers=HEADERS, timeout=10)
-        return r.json().get("data", {}).get("shows", {}).get("edges", [])
+        data = _post_allanime(gql, variables)
+        return data.get("data", {}).get("shows", {}).get("edges", [])
     except Exception:
         return []
+
 
 # ── Episodes ─────────────────────────────────────────────────────────────────
 
@@ -41,10 +69,8 @@ def get_episodes(anime_id: str, translation_type: str = "sub") -> list:
     }
     """
     try:
-        r = requests.post(ALLANIME_API,
-                          json={"query": gql, "variables": {"showId": anime_id}},
-                          headers=HEADERS, timeout=10)
-        detail = r.json().get("data", {}).get("show", {}).get("availableEpisodesDetail", {})
+        data = _post_allanime(gql, {"showId": anime_id})
+        detail = data.get("data", {}).get("show", {}).get("availableEpisodesDetail", {})
         eps = detail.get(translation_type, [])
         try:
             eps = sorted(eps, key=lambda x: float(x))
@@ -53,6 +79,7 @@ def get_episodes(anime_id: str, translation_type: str = "sub") -> list:
         return eps
     except Exception:
         return []
+
 
 # ── Stream ────────────────────────────────────────────────────────────────────
 
@@ -65,55 +92,60 @@ def _get_sources(anime_id: str, episode: str, translation_type: str) -> list:
     }
     """
     variables = {
-        "showId":          anime_id,
+        "showId": anime_id,
         "translationType": translation_type,
-        "episodeString":   str(episode),
+        "episodeString": str(episode),
     }
     try:
-        r = requests.post(ALLANIME_API, json={"query": gql, "variables": variables},
-                          headers=HEADERS, timeout=10)
-        return r.json().get("data", {}).get("episode", {}).get("sourceUrls", [])
+        data = _post_allanime(gql, variables)
+        return data.get("data", {}).get("episode", {}).get("sourceUrls", [])
     except Exception:
         return []
 
+
 def _resolve(source_url: str) -> dict | None:
-    """Try to extract a playable URL from a source entry."""
     if not source_url:
         return None
+
+    # API sometimes returns URL-like paths instead of absolute URLs.
     if source_url.startswith("//"):
         source_url = "https:" + source_url
     elif source_url.startswith("/"):
-        source_url = "https://allanime.day" + source_url
+        source_url = urljoin("https://allanime.to", source_url)
 
-    try:
-        r = requests.get(source_url, headers=HEADERS, timeout=10)
-        text = r.text
+    # direct stream links
+    if ".m3u8" in source_url:
+        return {"url": source_url, "type": "hls"}
+    if ".mp4" in source_url:
+        return {"url": source_url, "type": "mp4"}
 
-        m3u8 = re.search(r'(https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)', text)
-        if m3u8:
-            return {"url": m3u8.group(1), "type": "hls"}
+    for base in ("https://allanime.to", "https://allanime.day"):
+        headers = {**HEADERS, "Referer": base}
+        try:
+            candidate = source_url if source_url.startswith("http") else urljoin(base, source_url)
+            res = requests.get(candidate, headers=headers, timeout=12)
+            text = res.text
 
-        mp4 = re.search(r'(https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)', text)
-        if mp4:
-            return {"url": mp4.group(1), "type": "mp4"}
+            m3u8 = re.search(r'(https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)', text)
+            if m3u8:
+                return {"url": m3u8.group(1), "type": "hls"}
 
-        # Sometimes the resolved URL itself is the stream
-        if ".m3u8" in source_url:
-            return {"url": source_url, "type": "hls"}
-        if ".mp4" in source_url:
-            return {"url": source_url, "type": "mp4"}
-    except Exception:
-        pass
+            mp4 = re.search(r'(https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)', text)
+            if mp4:
+                return {"url": mp4.group(1), "type": "mp4"}
+        except Exception:
+            continue
+
     return None
+
 
 def get_best_stream(anime_id: str, episode: str, translation_type: str = "sub") -> dict | None:
     sources = _get_sources(anime_id, episode, translation_type)
-    # Prefer these providers (same priority order as ani-cli)
     priority = ["Yt-mp4", "Luf-mp4", "S-mp4", "Kir", "Ac"]
 
-    def _rank(s):
+    def _rank(source: dict) -> int:
         try:
-            return priority.index(s.get("sourceName", ""))
+            return priority.index(source.get("sourceName", ""))
         except ValueError:
             return 99
 
@@ -122,6 +154,7 @@ def get_best_stream(anime_id: str, episode: str, translation_type: str = "sub") 
         if result:
             return result
     return None
+
 
 # ── AniList ───────────────────────────────────────────────────────────────────
 
@@ -142,9 +175,11 @@ def get_anilist_info(title: str) -> dict | None:
     }
     """
     try:
-        r = requests.post(ANILIST_API,
-                          json={"query": gql, "variables": {"search": title}},
-                          timeout=10)
+        r = requests.post(
+            ANILIST_API,
+            json={"query": gql, "variables": {"search": title}},
+            timeout=10,
+        )
         return r.json().get("data", {}).get("Media")
     except Exception:
         return None
