@@ -348,6 +348,7 @@ const S = {
   translation: 'sub',
   currentEp:   null,
   streamUrl:   null,
+  streamType:  null,
   settings:    {},
 };
 
@@ -495,8 +496,15 @@ async function playEpisode(ep, index) {
   if (S.settings.player === 'mpv') {
     const stream = await api.get(`/api/stream?id=${S.anime.id}&episode=${ep}&type=${S.translation}`).catch(() => null);
     if (stream?.url) {
-      await api.post('/api/mpv', { url: stream.url });
-      return;
+      S.streamUrl = stream.url;
+      S.streamType = stream.type || null;
+      const mpvRes = await api.post('/api/mpv', {
+        url: stream.url,
+        referer: 'https://allanime.to',
+        user_agent: navigator.userAgent || 'Mozilla/5.0',
+      }).catch(() => ({ error: 'Failed to launch mpv' }));
+      if (!mpvRes?.error) return;
+      showPlayerError('MPV failed to launch. Falling back to web player.');
     }
   }
 
@@ -507,6 +515,7 @@ async function playEpisode(ep, index) {
     return;
   }
   S.streamUrl = stream.url;
+  S.streamType = stream.type || null;
   loadStream(stream.url, stream.type);
   saveProgress(ep, 0, 0);
 }
@@ -556,8 +565,23 @@ function playAdjacentEp(dir) {
 }
 
 async function playInMpv() {
-  if (!S.streamUrl) return;
-  await api.post('/api/mpv', { url: S.streamUrl });
+  if (!S.streamUrl && S.anime && S.currentEp) {
+    const stream = await api.get(`/api/stream?id=${S.anime.id}&episode=${S.currentEp.ep}&type=${S.translation}`).catch(() => null);
+    if (!stream?.url) {
+      showPlayerError('No stream to open in MPV for this episode.');
+      return;
+    }
+    S.streamUrl = stream.url;
+    S.streamType = stream.type || null;
+  }
+
+  const res = await api.post('/api/mpv', {
+    url: S.streamUrl,
+    referer: 'https://allanime.to',
+    user_agent: navigator.userAgent || 'Mozilla/5.0',
+  }).catch(() => ({ error: 'Failed to launch mpv' }));
+
+  if (res?.error) showPlayerError('Could not launch MPV. Check if mpv is installed.');
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
