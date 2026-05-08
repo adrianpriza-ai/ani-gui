@@ -225,9 +225,9 @@
   <!-- Sidebar -->
   <nav id="sidebar">
     <div class="logo">a</div>
-    <button class="nav-btn active" id="nav-search" title="Search" onclick="showView('search')">🔍</button>
-    <button class="nav-btn" id="nav-history" title="History" onclick="showView('history')">🕘</button>
-    <button class="nav-btn" id="nav-settings" title="Settings" onclick="showView('settings')">⚙️</button>
+    <button class="nav-btn active" id="nav-search" title="Search" onclick="showView('search')"></button>
+    <button class="nav-btn" id="nav-history" title="History" onclick="showView('history')"></button>
+    <button class="nav-btn" id="nav-settings" title="Settings" onclick="showView('settings')"></button>
   </nav>
 
   <!-- Main -->
@@ -237,14 +237,14 @@
     <div class="view active" id="view-search">
       <div id="search-bar-wrap">
         <input id="search-input" type="text" placeholder="Search anime…" autocomplete="off" />
-        <span class="search-icon">🔍</span>
+        <span class="search-icon"></span>
       </div>
       <div id="search-results"></div>
     </div>
 
     <!-- Detail View -->
     <div class="view" id="view-detail">
-      <button class="back-btn" onclick="showView('search')">← Back</button>
+      <button class="back-btn" onclick="showView('search')">Back</button>
       <img id="detail-banner" src="" alt="" onerror="this.style.display='none'">
       <div id="detail-wrap">
         <div id="detail-poster"><img id="detail-cover" src="" alt=""></div>
@@ -267,15 +267,15 @@
 
     <!-- Player View -->
     <div class="view" id="view-player">
-      <button class="back-btn" onclick="showView('detail')">← Back to series</button>
+      <button class="back-btn" onclick="showView('detail')">Back to series</button>
       <div id="player-title">Title <span id="player-ep-label"></span></div>
       <div id="video-wrap">
         <video id="video" playsinline controls></video>
       </div>
       <div id="player-actions">
-        <button class="action-btn" onclick="playInMpv()">▶ Open in MPV</button>
-        <button class="action-btn" id="btn-prev" onclick="playAdjacentEp(-1)">← Prev</button>
-        <button class="action-btn" id="btn-next" onclick="playAdjacentEp(1)">Next →</button>
+        <button class="action-btn" onclick="playInMpv()">Open in MPV</button>
+        <button class="action-btn" id="btn-prev" onclick="playAdjacentEp(-1)">Previous</button>
+        <button class="action-btn" id="btn-next" onclick="playAdjacentEp(1)">Next</button>
       </div>
       <div id="player-error"></div>
     </div>
@@ -393,7 +393,7 @@ async function doSearch(q) {
 function renderResults(results) {
   const el = document.getElementById('search-results');
   if (!results.length) {
-    el.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>No results found.</div>';
+    el.innerHTML = '<div class="empty"><div class="empty-icon"></div>No results found.</div>';
     return;
   }
   el.innerHTML = '<div class="section-title">Results</div><div class="anime-grid">' +
@@ -602,7 +602,7 @@ async function loadHistory() {
   list.innerHTML = '<div style="color:var(--muted-text);font-size:14px">Loading…</div>';
   const history = await api.get('/api/history').catch(() => []);
   if (!history.length) {
-    list.innerHTML = '<div class="empty"><div class="empty-icon">🕘</div>No watch history yet.</div>';
+    list.innerHTML = '<div class="empty"><div class="empty-icon"></div>No watch history yet.</div>';
     return;
   }
   list.innerHTML = history.map(h => {
