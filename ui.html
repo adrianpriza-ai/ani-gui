@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ani-gui</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #09090f;
+    --surface:   #111118;
+    --card:      #191926;
+    --border:    rgba(255,255,255,0.07);
+    --accent:    #ff4d6d;
+    --accent-bg: rgba(255,77,109,0.12);
+    --text:      #eeeef5;
+    --muted:     #6868808e;
+    --muted-text:#9090a8;
+    --radius:    12px;
+    --radius-sm: 8px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; overflow: hidden; }
+
+  /* ── Layout ─────────────────────────────────────────── */
+  #app { display: flex; height: 100vh; }
+
+  /* Sidebar */
+  #sidebar {
+    width: 68px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 20px 0; gap: 6px; flex-shrink: 0; z-index: 10;
+  }
+  .logo { font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: -1px; margin-bottom: 16px; }
+  .nav-btn {
+    width: 46px; height: 46px; border: none; background: transparent;
+    border-radius: var(--radius-sm); cursor: pointer; display: flex;
+    align-items: center; justify-content: center; transition: background .15s, color .15s;
+    color: var(--muted-text); font-size: 20px;
+  }
+  .nav-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .nav-btn.active { background: var(--accent-bg); color: var(--accent); }
+
+  /* Main */
+  #main { flex: 1; overflow-y: auto; overflow-x: hidden; }
+  #main::-webkit-scrollbar { width: 6px; }
+  #main::-webkit-scrollbar-track { background: transparent; }
+  #main::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+
+  /* ── Views ──────────────────────────────────────────── */
+  .view { display: none; padding: 32px; animation: fadein .2s ease; }
+  .view.active { display: block; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* ── Search View ─────────────────────────────────────── */
+  #search-bar-wrap {
+    max-width: 600px; margin: 40px auto 32px; position: relative;
+  }
+  #search-input {
+    width: 100%; padding: 16px 52px 16px 20px;
+    background: var(--surface); border: 1.5px solid var(--border);
+    border-radius: 99px; color: var(--text); font-size: 16px;
+    font-family: 'Outfit', sans-serif; outline: none; transition: border-color .2s;
+  }
+  #search-input:focus { border-color: var(--accent); }
+  #search-input::placeholder { color: var(--muted-text); }
+  .search-icon {
+    position: absolute; right: 18px; top: 50%; transform: translateY(-50%);
+    color: var(--muted-text); pointer-events: none; font-size: 18px;
+  }
+
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted-text); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 16px; }
+
+  /* Grid */
+  .anime-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+
+  .anime-card {
+    background: var(--card); border-radius: var(--radius); overflow: hidden;
+    cursor: pointer; transition: transform .18s, box-shadow .18s; border: 1px solid var(--border);
+  }
+  .anime-card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+  .anime-card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block; background: #1c1c28; }
+  .card-info { padding: 10px 12px 12px; }
+  .card-title { font-size: 13px; font-weight: 500; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card-score { font-size: 12px; color: var(--muted-text); margin-top: 4px; }
+
+  /* Loading skeleton */
+  .skeleton { background: linear-gradient(90deg, var(--card) 25%, #232334 50%, var(--card) 75%); background-size: 200%; animation: shimmer 1.2s infinite; border-radius: var(--radius); }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* ── Detail View ─────────────────────────────────────── */
+  #detail-banner {
+    width: 100%; height: 220px; object-fit: cover; display: block;
+    border-radius: var(--radius); margin-bottom: 24px; background: var(--card);
+  }
+  #detail-wrap { display: flex; gap: 24px; margin-bottom: 32px; }
+  #detail-poster { width: 140px; flex-shrink: 0; border-radius: var(--radius-sm); overflow: hidden; }
+  #detail-poster img { width: 100%; display: block; }
+  #detail-meta { flex: 1; }
+  #detail-title { font-size: 24px; font-weight: 700; line-height: 1.2; margin-bottom: 8px; }
+  #detail-subtitle { font-size: 13px; color: var(--muted-text); margin-bottom: 12px; }
+  .badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .badge {
+    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 99px;
+    background: rgba(255,255,255,0.07); color: var(--muted-text); letter-spacing: .04em;
+  }
+  .badge.accent { background: var(--accent-bg); color: var(--accent); }
+  #detail-desc { font-size: 13px; line-height: 1.7; color: var(--muted-text); max-height: 80px; overflow: hidden; position: relative; }
+
+  /* Sub/Dub toggle */
+  .seg-ctrl { display: inline-flex; background: var(--card); border-radius: 99px; padding: 3px; margin-bottom: 16px; }
+  .seg-btn {
+    padding: 6px 20px; border: none; background: transparent; color: var(--muted-text);
+    border-radius: 99px; font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: .15s;
+  }
+  .seg-btn.active { background: var(--accent); color: #fff; }
+
+  /* Episode grid */
+  #eps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
+  .ep-btn {
+    padding: 10px 4px; background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); font-family: 'Outfit', sans-serif;
+    font-size: 13px; font-weight: 500; cursor: pointer; transition: .15s; text-align: center;
+  }
+  .ep-btn:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+  .ep-btn.watched { opacity: .45; }
+
+  /* Back btn */
+  .back-btn {
+    display: inline-flex; align-items: center; gap: 6px; margin-bottom: 24px;
+    background: transparent; border: none; color: var(--muted-text); font-family: 'Outfit', sans-serif;
+    font-size: 14px; cursor: pointer; padding: 0; transition: color .15s;
+  }
+  .back-btn:hover { color: var(--text); }
+
+  /* ── Player View ─────────────────────────────────────── */
+  #player-view .back-btn { margin-bottom: 16px; }
+  #player-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+  #player-title span { color: var(--muted-text); font-weight: 400; font-size: 15px; margin-left: 8px; }
+  #video-wrap { max-width: 1100px; background: #000; border-radius: var(--radius); overflow: hidden; }
+  #player-actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; }
+  .action-btn {
+    padding: 9px 18px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-family: 'Outfit', sans-serif; font-size: 13px;
+    cursor: pointer; display: flex; align-items: center; gap: 6px; transition: .15s;
+  }
+  .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #player-error { color: #ff6b6b; font-size: 14px; margin-top: 10px; display: none; }
+
+  /* ── History View ────────────────────────────────────── */
+  .history-card {
+    display: flex; gap: 14px; background: var(--card); border-radius: var(--radius);
+    padding: 14px; border: 1px solid var(--border); cursor: pointer;
+    transition: border-color .15s; margin-bottom: 10px; position: relative;
+  }
+  .history-card:hover { border-color: rgba(255,255,255,0.15); }
+  .history-thumb { width: 80px; height: 110px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; background: var(--surface); }
+  .history-info { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
+  .history-title { font-size: 15px; font-weight: 500; }
+  .history-ep { font-size: 13px; color: var(--muted-text); margin-top: 4px; }
+  .history-date { font-size: 12px; color: var(--muted-text); }
+  .progress-bar { height: 3px; background: rgba(255,255,255,0.1); border-radius: 99px; margin-top: 8px; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 99px; }
+  .del-btn {
+    position: absolute; top: 10px; right: 10px; width: 28px; height: 28px;
+    background: transparent; border: none; color: var(--muted-text); font-size: 16px;
+    cursor: pointer; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    transition: .15s;
+  }
+  .del-btn:hover { background: rgba(255,77,77,.15); color: #ff6b6b; }
+
+  /* ── Settings View ───────────────────────────────────── */
+  .settings-group { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; margin-bottom: 16px; }
+  .settings-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-label { font-size: 14px; font-weight: 500; }
+  .settings-desc { font-size: 12px; color: var(--muted-text); margin-top: 3px; }
+
+  /* Toggle */
+  .toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; inset: 0; background: rgba(255,255,255,0.12);
+    border-radius: 99px; cursor: pointer; transition: background .2s;
+  }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle-thumb {
+    position: absolute; width: 18px; height: 18px; background: #fff;
+    border-radius: 50%; top: 3px; left: 3px; pointer-events: none; transition: left .2s;
+  }
+  .toggle input:checked ~ .toggle-thumb { left: 23px; }
+
+  .settings-select {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: 'Outfit', sans-serif; font-size: 13px; padding: 7px 12px;
+    border-radius: var(--radius-sm); outline: none;
+  }
+
+  .danger-btn {
+    padding: 10px 20px; background: rgba(255,77,77,.12); border: 1px solid rgba(255,77,77,.25);
+    color: #ff6b6b; border-radius: var(--radius-sm); font-family: 'Outfit', sans-serif;
+    font-size: 14px; cursor: pointer; transition: .15s;
+  }
+  .danger-btn:hover { background: rgba(255,77,77,.22); }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted-text); }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+
+  /* ── Plyr overrides ──────────────────────────────────── */
+  .plyr { --plyr-color-main: var(--accent); border-radius: 0; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="logo">a</div>
+    <button class="nav-btn active" id="nav-search" title="Search" onclick="showView('search')">🔍</button>
+    <button class="nav-btn" id="nav-history" title="History" onclick="showView('history')">🕘</button>
+    <button class="nav-btn" id="nav-settings" title="Settings" onclick="showView('settings')">⚙️</button>
+  </nav>
+
+  <!-- Main -->
+  <main id="main">
+
+    <!-- Search View -->
+    <div class="view active" id="view-search">
+      <div id="search-bar-wrap">
+        <input id="search-input" type="text" placeholder="Search anime…" autocomplete="off" />
+        <span class="search-icon">🔍</span>
+      </div>
+      <div id="search-results"></div>
+    </div>
+
+    <!-- Detail View -->
+    <div class="view" id="view-detail">
+      <button class="back-btn" onclick="showView('search')">← Back</button>
+      <img id="detail-banner" src="" alt="" onerror="this.style.display='none'">
+      <div id="detail-wrap">
+        <div id="detail-poster"><img id="detail-cover" src="" alt=""></div>
+        <div id="detail-meta">
+          <div id="detail-title">—</div>
+          <div id="detail-subtitle"></div>
+          <div class="badge-row" id="detail-badges"></div>
+          <div id="detail-desc"></div>
+        </div>
+      </div>
+
+      <div class="seg-ctrl">
+        <button class="seg-btn active" onclick="switchTranslation('sub', this)">SUB</button>
+        <button class="seg-btn" onclick="switchTranslation('dub', this)">DUB</button>
+      </div>
+
+      <div class="section-title">Episodes</div>
+      <div id="eps-grid"></div>
+    </div>
+
+    <!-- Player View -->
+    <div class="view" id="view-player">
+      <button class="back-btn" onclick="showView('detail')">← Back to series</button>
+      <div id="player-title">Title <span id="player-ep-label"></span></div>
+      <div id="video-wrap">
+        <video id="video" playsinline controls></video>
+      </div>
+      <div id="player-actions">
+        <button class="action-btn" onclick="playInMpv()">▶ Open in MPV</button>
+        <button class="action-btn" id="btn-prev" onclick="playAdjacentEp(-1)">← Prev</button>
+        <button class="action-btn" id="btn-next" onclick="playAdjacentEp(1)">Next →</button>
+      </div>
+      <div id="player-error"></div>
+    </div>
+
+    <!-- History View -->
+    <div class="view" id="view-history">
+      <div class="section-title" style="margin-bottom:20px">Continue Watching</div>
+      <div id="history-list"></div>
+    </div>
+
+    <!-- Settings View -->
+    <div class="view" id="view-settings">
+      <div class="section-title" style="margin-bottom:20px">Settings</div>
+
+      <div class="settings-group">
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Hardware Acceleration</div>
+            <div class="settings-desc">Enable GPU rendering. Off by default — not supported on legacy Radeon (radeon driver).</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="set-hw-accel" onchange="saveSetting('hw_accel', this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Default Player</div>
+            <div class="settings-desc">Where episodes play by default.</div>
+          </div>
+          <select class="settings-select" id="set-player" onchange="saveSetting('player', this.value)">
+            <option value="web">Web (built-in)</option>
+            <option value="mpv">MPV (external)</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Default Language</div>
+            <div class="settings-desc">Sub or dub preference.</div>
+          </div>
+          <select class="settings-select" id="set-lang" onchange="saveSetting('sub_lang', this.value)">
+            <option value="sub">Subtitled (Sub)</option>
+            <option value="dub">Dubbed (Dub)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Clear Watch History</div>
+            <div class="settings-desc">Remove all history and progress data.</div>
+          </div>
+          <button class="danger-btn" onclick="clearHistory()">Clear All</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js"></script>
+<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const S = {
+  anime:       null,  // currently selected anime object
+  episodes:    [],
+  translation: 'sub',
+  currentEp:   null,
+  streamUrl:   null,
+  settings:    {},
+};
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  const navBtn = document.getElementById('nav-' + name);
+  if (navBtn) navBtn.classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+const api = {
+  get:  (path)       => fetch(path).then(r => r.json()),
+  post: (path, body) => fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json()),
+  del:  (path)       => fetch(path, { method:'DELETE' }),
+};
+
+// ── Search ────────────────────────────────────────────────────────────────────
+let searchTimer;
+document.getElementById('search-input').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (!q) { document.getElementById('search-results').innerHTML = ''; return; }
+  searchTimer = setTimeout(() => doSearch(q), 450);
+});
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(e.target.value.trim()); }
+});
+
+async function doSearch(q) {
+  if (!q) return;
+  const el = document.getElementById('search-results');
+  el.innerHTML = '<div class="section-title">Results</div><div class="anime-grid">' +
+    Array(12).fill('<div class="skeleton" style="aspect-ratio:2/3;border-radius:var(--radius)"></div>').join('') + '</div>';
+  const results = await api.get(`/api/search?q=${encodeURIComponent(q)}&type=${S.settings.sub_lang||'sub'}`).catch(() => []);
+  renderResults(results);
+}
+
+function renderResults(results) {
+  const el = document.getElementById('search-results');
+  if (!results.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>No results found.</div>';
+    return;
+  }
+  el.innerHTML = '<div class="section-title">Results</div><div class="anime-grid">' +
+    results.map(r => {
+      const al = r.anilist || {};
+      const img = al.coverImage?.large || r.thumbnail || '';
+      const title = al.title?.english || r.title || 'Unknown';
+      const score = al.averageScore ? `⭐ ${al.averageScore/10}/10` : '';
+      return `<div class="anime-card" onclick='openAnime(${JSON.stringify(r).replace(/'/g,"&#39;")})'>
+        <img src="${img}" alt="" loading="lazy" onerror="this.src=''">
+        <div class="card-info">
+          <div class="card-title">${title}</div>
+          <div class="card-score">${score}</div>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+}
+
+// ── Detail ────────────────────────────────────────────────────────────────────
+async function openAnime(anime) {
+  S.anime = anime;
+  S.translation = S.settings.sub_lang || 'sub';
+  const al = anime.anilist || {};
+
+  // Banner
+  const banner = document.getElementById('detail-banner');
+  if (al.bannerImage) { banner.src = al.bannerImage; banner.style.display = 'block'; }
+  else banner.style.display = 'none';
+
+  // Cover
+  document.getElementById('detail-cover').src = al.coverImage?.extraLarge || al.coverImage?.large || anime.thumbnail || '';
+
+  // Title
+  document.getElementById('detail-title').textContent = al.title?.english || anime.title;
+  document.getElementById('detail-subtitle').textContent = al.title?.romaji || '';
+
+  // Badges
+  const badges = [];
+  if (al.averageScore) badges.push(`<span class="badge accent">⭐ ${al.averageScore/10}/10</span>`);
+  if (al.seasonYear)   badges.push(`<span class="badge">${al.seasonYear}</span>`);
+  if (al.status)       badges.push(`<span class="badge">${al.status.replace(/_/g,' ')}</span>`);
+  (al.genres || []).slice(0,4).forEach(g => badges.push(`<span class="badge">${g}</span>`));
+  document.getElementById('detail-badges').innerHTML = badges.join('');
+
+  // Description
+  const desc = (al.description || '').replace(/<[^>]+>/g,'');
+  document.getElementById('detail-desc').textContent = desc;
+
+  // Sub/Dub button state
+  document.querySelectorAll('.seg-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.toLowerCase() === S.translation);
+  });
+
+  showView('detail');
+  await loadEpisodes();
+}
+
+async function loadEpisodes() {
+  if (!S.anime) return;
+  document.getElementById('eps-grid').innerHTML = '<div style="color:var(--muted-text);font-size:14px">Loading episodes…</div>';
+  const data = await api.get(`/api/episodes?id=${S.anime.id}&type=${S.translation}`).catch(() => ({episodes:[]}));
+  S.episodes = data.episodes || [];
+  renderEpisodes();
+}
+
+function renderEpisodes() {
+  const grid = document.getElementById('eps-grid');
+  if (!S.episodes.length) {
+    grid.innerHTML = '<div style="color:var(--muted-text);font-size:14px">No episodes available for this language.</div>';
+    return;
+  }
+  grid.innerHTML = S.episodes.map((ep, i) =>
+    `<button class="ep-btn" onclick="playEpisode('${ep}', ${i})">Ep ${ep}</button>`
+  ).join('');
+}
+
+async function switchTranslation(lang, btn) {
+  S.translation = lang;
+  document.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  await loadEpisodes();
+}
+
+// ── Player ────────────────────────────────────────────────────────────────────
+let player;
+
+async function playEpisode(ep, index) {
+  S.currentEp = { ep, index };
+  document.getElementById('player-title').innerHTML =
+    `${S.anime?.anilist?.title?.english || S.anime?.title || ''} <span>Episode ${ep}</span>`;
+  document.getElementById('player-error').style.display = 'none';
+
+  // Nav buttons
+  document.getElementById('btn-prev').disabled = index === 0;
+  document.getElementById('btn-next').disabled = index === S.episodes.length - 1;
+
+  showView('player');
+
+  // Check settings: if default player is mpv, go straight to mpv
+  if (S.settings.player === 'mpv') {
+    const stream = await api.get(`/api/stream?id=${S.anime.id}&episode=${ep}&type=${S.translation}`).catch(() => null);
+    if (stream?.url) {
+      await api.post('/api/mpv', { url: stream.url });
+      return;
+    }
+  }
+
+  // Fetch stream
+  const stream = await api.get(`/api/stream?id=${S.anime.id}&episode=${ep}&type=${S.translation}`).catch(() => null);
+  if (!stream || stream.error) {
+    showPlayerError('Could not find a stream for this episode.');
+    return;
+  }
+  S.streamUrl = stream.url;
+  loadStream(stream.url, stream.type);
+  saveProgress(ep, 0, 0);
+}
+
+function loadStream(url, type) {
+  const video = document.getElementById('video');
+
+  // Destroy old player
+  if (player) { try { player.destroy(); } catch(e) {} player = null; }
+
+  if (type === 'hls' && Hls.isSupported()) {
+    const hls = new Hls({ enableWorker: false });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.ERROR, (_, d) => {
+      if (d.fatal) showPlayerError('Stream error. Try opening in MPV.');
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = url;
+  } else {
+    video.src = url;
+  }
+
+  player = new Plyr(video, {
+    controls: ['play','progress','current-time','mute','volume','captions','settings','fullscreen'],
+    settings: ['speed','loop'],
+  });
+
+  // Save progress periodically
+  video.addEventListener('timeupdate', () => {
+    if (video.currentTime > 0 && S.currentEp) {
+      saveProgress(S.currentEp.ep, video.currentTime, video.duration || 0);
+    }
+  });
+}
+
+function showPlayerError(msg) {
+  const el = document.getElementById('player-error');
+  el.textContent = '⚠ ' + msg;
+  el.style.display = 'block';
+}
+
+function playAdjacentEp(dir) {
+  const next = S.currentEp.index + dir;
+  if (next < 0 || next >= S.episodes.length) return;
+  playEpisode(S.episodes[next], next);
+}
+
+async function playInMpv() {
+  if (!S.streamUrl) return;
+  await api.post('/api/mpv', { url: S.streamUrl });
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+async function saveProgress(ep, progress, duration) {
+  if (!S.anime) return;
+  await api.post('/api/history', {
+    anime_id:    S.anime.id,
+    anime_title: S.anime.anilist?.title?.english || S.anime.title,
+    episode:     ep,
+    progress,
+    duration,
+    thumbnail:   S.anime.anilist?.coverImage?.large || S.anime.thumbnail || '',
+  }).catch(() => {});
+}
+
+async function loadHistory() {
+  const list = document.getElementById('history-list');
+  list.innerHTML = '<div style="color:var(--muted-text);font-size:14px">Loading…</div>';
+  const history = await api.get('/api/history').catch(() => []);
+  if (!history.length) {
+    list.innerHTML = '<div class="empty"><div class="empty-icon">🕘</div>No watch history yet.</div>';
+    return;
+  }
+  list.innerHTML = history.map(h => {
+    const pct = h.duration > 0 ? Math.min(100, (h.progress / h.duration) * 100).toFixed(1) : 0;
+    const date = new Date(h.last_watched).toLocaleDateString();
+    return `<div class="history-card" onclick="resumeFromHistory(${h.id})">
+      <img class="history-thumb" src="${h.thumbnail}" alt="" onerror="this.style.background='var(--surface)'">
+      <div class="history-info">
+        <div>
+          <div class="history-title">${h.anime_title}</div>
+          <div class="history-ep">Episode ${h.episode}</div>
+        </div>
+        <div>
+          <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+          <div class="history-date" style="margin-top:6px">${date}</div>
+        </div>
+      </div>
+      <button class="del-btn" onclick="event.stopPropagation();deleteHistory(${h.id}, this)">✕</button>
+    </div>`;
+  }).join('');
+}
+
+async function deleteHistory(id, btn) {
+  await api.del('/api/history/' + id);
+  btn.closest('.history-card').remove();
+}
+
+async function resumeFromHistory(id) {
+  // Go back to search and open history isn't tied to current search state
+  // For now, just notify — user can search again. Future: store full anime object in history.
+  alert('Re-search the anime to resume. (Full deep-link coming soon!)');
+}
+
+async function clearHistory() {
+  if (!confirm('Clear all watch history?')) return;
+  const history = await api.get('/api/history').catch(() => []);
+  await Promise.all(history.map(h => api.del('/api/history/' + h.id)));
+  loadHistory();
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  S.settings = await api.get('/api/settings').catch(() => ({}));
+  document.getElementById('set-hw-accel').checked = !!S.settings.hw_accel;
+  document.getElementById('set-player').value  = S.settings.player   || 'web';
+  document.getElementById('set-lang').value    = S.settings.sub_lang || 'sub';
+}
+
+async function saveSetting(key, value) {
+  S.settings[key] = value;
+  await api.post('/api/settings', { [key]: value });
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadSettings();
+</script>
+</body>
+</html>
