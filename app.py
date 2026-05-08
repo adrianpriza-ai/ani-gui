@@ -171,8 +171,19 @@ async def api_mpv(req: Request):
     url = data.get("url", "")
     if not url:
         return JSONResponse({"error": "No URL"}, status_code=400)
+    referer = data.get("referer", "https://allanime.to")
+    user_agent = data.get("user_agent", "Mozilla/5.0")
     try:
-        subprocess.Popen(["mpv", url], start_new_session=True)
+        cmd = [
+            "mpv",
+            "--referrer",
+            referer,
+            "--user-agent",
+            user_agent,
+            "--force-window=yes",
+            url,
+        ]
+        subprocess.Popen(cmd, start_new_session=True)
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
