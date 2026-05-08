@@ -103,6 +103,88 @@ def _get_sources(anime_id: str, episode: str, translation_type: str) -> list:
         return []
 
 
+
+
+def _decode_allanime_url(encoded: str) -> str | None:
+    """Decode AllAnime obfuscated source URLs (ani-cli compatible style)."""
+    if not encoded:
+        return None
+
+    token = encoded.strip()
+    if token.startswith('--'):
+        token = token[2:]
+
+    # Variant 1: hex-pairs XOR 56 (used in some Allanime sources)
+    if re.fullmatch(r'[0-9a-fA-F]+', token) and len(token) % 2 == 0:
+        try:
+            plain = bytes.fromhex(token).decode("utf-8", errors="ignore")
+            if plain.startswith("http") or plain.startswith("/") or plain.startswith("//"):
+                return plain
+        except Exception:
+            pass
+        try:
+            decoded = ''.join(chr(int(token[i:i + 2], 16) ^ 56) for i in range(0, len(token), 2))
+            if decoded.startswith('http') or decoded.startswith('/') or decoded.startswith('//'):
+                return decoded
+        except Exception:
+            pass
+
+    # Variant 2: encoded path separators using "--"
+    if '--' in encoded and not re.fullmatch(r'[0-9a-fA-F]+', token):
+        guessed = encoded.replace('--', '/')
+        if guessed.startswith('http') or guessed.startswith('/') or guessed.startswith('//'):
+            return guessed
+
+    return None
+
+
+def _candidate_source_urls(raw_source: str) -> list[str]:
+    candidates = []
+    if not raw_source:
+        return candidates
+
+    candidates.append(raw_source)
+    decoded = _decode_allanime_url(raw_source)
+    if decoded and decoded not in candidates:
+        candidates.append(decoded)
+
+    return candidates
+
+def _resolve(source_url: str) -> dict | None:
+    for raw in _candidate_source_urls(source_url):
+        candidate_source = raw
+
+        if candidate_source.startswith("//"):
+            candidate_source = "https:" + candidate_source
+        elif candidate_source.startswith("/"):
+            candidate_source = urljoin("https://allanime.to", candidate_source)
+
+        if ".m3u8" in candidate_source:
+            return {"url": candidate_source, "type": "hls"}
+        if ".mp4" in candidate_source:
+            return {"url": candidate_source, "type": "mp4"}
+
+        for base in ("https://allanime.to", "https://allanime.day"):
+            headers = {**HEADERS, "Referer": base}
+            try:
+                candidate = (
+                    candidate_source
+                    if candidate_source.startswith("http")
+                    else urljoin(base, candidate_source)
+                )
+                res = requests.get(candidate, headers=headers, timeout=12)
+                text = res.text
+
+                m3u8 = re.search(r'(https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)', text)
+                if m3u8:
+                    return {"url": m3u8.group(1), "type": "hls"}
+
+                mp4 = re.search(r'(https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)', text)
+                if mp4:
+                    return {"url": mp4.group(1), "type": "mp4"}
+            except Exception:
+                continue
+
 def _resolve(source_url: str) -> dict | None:
     if not source_url:
         return None
