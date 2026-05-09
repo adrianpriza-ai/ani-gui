@@ -1,5 +1,6 @@
 import os
 import json
+from urllib.parse import quote, unquote
 import sqlite3
 import subprocess
 import threading
@@ -8,8 +9,14 @@ import time
 import uvicorn
 import webview
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, Response
 
+
+# ── Proxy headers (same as ani-cli / scraper) ─────────────────────────────────
+_PROXY_H = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    "Referer":    "https://allanime.to",
+}
 from scraper import search_anime, get_episodes, get_best_stream, get_anilist_info
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -89,11 +96,65 @@ async def api_episodes(id: str, type: str = "sub"):
 # ── Stream ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/stream")
-async def api_stream(id: str, episode: str, type: str = "sub"):
-    stream = get_best_stream(id, episode, type)
-    if stream:
-        return JSONResponse(stream)
-    return JSONResponse({"error": "No stream found"}, status_code=404)
+async def api_stream(request: Request, id: str, episode: str, type: str = "sub", title: str = ""):
+    stream = get_best_stream(id, episode, type, anime_title=title)
+    if not stream or "error" in stream:
+        return JSONResponse({"error": "No stream found"}, status_code=404)
+    # Wrap raw CDN URL in our proxy so the browser doesn't need to set Referer
+    raw_url = stream["url"]
+    proxy_url = str(request.base_url) + "api/proxy?url=" + quote(raw_url, safe="")
+    return JSONResponse({"url": proxy_url, "type": stream["type"], "raw": raw_url})
+
+@app.get("/api/proxy")
+async def api_proxy(url: str):
+    """
+    Reverse-proxy a stream URL with the correct Referer/UA headers.
+    Handles both direct MP4 and HLS (.m3u8 + segments).
+    """
+    import requests as req_lib
+    real_url = unquote(url)
+
+    # ── HLS manifest: proxy + rewrite segment URLs ────────────────────────────
+    if ".m3u8" in real_url:
+        try:
+            r    = req_lib.get(real_url, headers=_PROXY_H, timeout=15)
+            base = real_url.rsplit("/", 1)[0] + "/"
+            lines = []
+            for line in r.text.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    seg = stripped if stripped.startswith("http") else base + stripped
+                    line = "/api/proxy?url=" + quote(seg, safe="")
+                lines.append(line)
+            return Response(
+                content="\n".join(lines),
+                media_type="application/vnd.apple.mpegurl",
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+
+    # ── Direct stream: proxy with streaming ───────────────────────────────────
+    try:
+        r = req_lib.get(real_url, headers=_PROXY_H, stream=True, timeout=20)
+        ct = r.headers.get("content-type", "video/mp4")
+
+        def _stream():
+            for chunk in r.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        return StreamingResponse(
+            _stream(),
+            media_type=ct,
+            headers={
+                "Accept-Ranges":              "bytes",
+                "Access-Control-Allow-Origin": "*",
+                "Content-Length":             r.headers.get("content-length", ""),
+            },
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 # ── History ───────────────────────────────────────────────────────────────────
 
@@ -167,23 +228,21 @@ async def api_settings_save(req: Request):
 
 @app.post("/api/mpv")
 async def api_mpv(req: Request):
-    data = await req.json()
-    url = data.get("url", "")
+    data    = await req.json()
+    url     = data.get("url", "")
+    referer = data.get("referer", "https://allanime.to")
+    ua      = data.get("user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
     if not url:
         return JSONResponse({"error": "No URL"}, status_code=400)
-    referer = data.get("referer", "https://allanime.to")
-    user_agent = data.get("user_agent", "Mozilla/5.0")
     try:
-        cmd = [
+        # MPV requires --flag=value, not --flag value
+        subprocess.Popen([
             "mpv",
-            "--referrer",
-            referer,
-            "--user-agent",
-            user_agent,
+            f"--referrer={referer}",
+            f"--user-agent={ua}",
             "--force-window=yes",
             url,
-        ]
-        subprocess.Popen(cmd, start_new_session=True)
+        ], start_new_session=True)
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
