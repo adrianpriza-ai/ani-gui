@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 pywebview
 requests
+pycryptodome
