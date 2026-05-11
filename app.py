@@ -10,6 +10,7 @@ import uvicorn
 import webview
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, Response
+import httpx
 
 
 # ── Proxy headers (same as ani-cli / scraper) ─────────────────────────────────
@@ -72,18 +73,66 @@ async def serve_ui():
 
 @app.get("/api/search")
 async def api_search(q: str, type: str = "sub"):
+    import asyncio, concurrent.futures
     raw = search_anime(q, type)
-    results = []
-    for r in raw[:12]:
-        anilist = get_anilist_info(r.get("englishName") or r.get("name", ""))
-        results.append({
+
+    loop = asyncio.get_event_loop()
+    def _enrich(r):
+        al = get_anilist_info(r.get("englishName") or r.get("name", ""))
+        return {
             "id":        r.get("_id"),
             "title":     r.get("englishName") or r.get("name"),
             "raw_title": r.get("name"),
             "eps_avail": r.get("availableEpisodes", {}),
             "thumbnail": r.get("thumbnail"),
             "score":     r.get("score"),
-            "anilist":   anilist,
+            "anilist":   al,
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(_enrich, raw[:12]))
+    return JSONResponse(results)
+
+@app.get("/api/trending")
+async def api_trending(type: str = "sub"):
+    """Fetch trending anime from AniList for the Home view."""
+    import asyncio, concurrent.futures
+    gql = """
+    query {
+        Page(perPage: 12) {
+            media(type: ANIME, sort: TRENDING_DESC, status_not: NOT_YET_RELEASED) {
+                title { romaji english }
+                coverImage { large extraLarge }
+                averageScore episodes status seasonYear
+                description(asHtml: false)
+                genres
+            }
+        }
+    }"""
+    try:
+        r = requests.post("https://graphql.anilist.co",
+                          json={"query": gql}, timeout=12)
+        media_list = r.json().get("data", {}).get("Page", {}).get("media", [])
+    except Exception:
+        return JSONResponse([])
+
+    results = []
+    for m in media_list:
+        results.append({
+            "id":        None,
+            "title":     m.get("title", {}).get("english") or m.get("title", {}).get("romaji", ""),
+            "thumbnail": m.get("coverImage", {}).get("large", ""),
+            "score":     m.get("averageScore"),
+            "anilist":   {
+                "title":       m.get("title", {}),
+                "coverImage":  m.get("coverImage", {}),
+                "averageScore": m.get("averageScore"),
+                "episodes":    m.get("episodes"),
+                "status":      m.get("status"),
+                "seasonYear":  m.get("seasonYear"),
+                "description": m.get("description", ""),
+                "genres":      m.get("genres", []),
+            },
         })
     return JSONResponse(results)
 
@@ -106,53 +155,55 @@ async def api_stream(request: Request, id: str, episode: str, type: str = "sub",
     return JSONResponse({"url": proxy_url, "type": stream["type"], "raw": raw_url})
 
 @app.get("/api/proxy")
-async def api_proxy(url: str):
+async def api_proxy(request: Request, url: str):
     """
-    Reverse-proxy a stream URL with the correct Referer/UA headers.
-    Handles both direct MP4 and HLS (.m3u8 + segments).
+    Async proxy menggunakan httpx — setiap Range request (seek) dapat
+    koneksi sendiri, tidak pernah block event loop atau stuck di belakang
+    stream sebelumnya.
     """
-    import requests as req_lib
     real_url = unquote(url)
+    h        = {**_PROXY_H}
+    rang     = request.headers.get("range")
+    if rang:
+        h["Range"] = rang
 
-    # ── HLS manifest: proxy + rewrite segment URLs ────────────────────────────
+    # ── HLS manifest: rewrite segment URLs ────────────────────────────────────
     if ".m3u8" in real_url:
         try:
-            r    = req_lib.get(real_url, headers=_PROXY_H, timeout=15)
+            async with httpx.AsyncClient(follow_redirects=True) as c:
+                r    = await c.get(real_url, headers=h, timeout=15)
             base = real_url.rsplit("/", 1)[0] + "/"
             lines = []
             for line in r.text.splitlines():
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    seg = stripped if stripped.startswith("http") else base + stripped
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    seg  = s if s.startswith("http") else base + s
                     line = "/api/proxy?url=" + quote(seg, safe="")
                 lines.append(line)
-            return Response(
-                content="\n".join(lines),
-                media_type="application/vnd.apple.mpegurl",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            return Response("\n".join(lines),
+                            media_type="application/vnd.apple.mpegurl",
+                            headers={"Access-Control-Allow-Origin": "*"})
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=502)
 
-    # ── Direct stream: proxy with streaming ───────────────────────────────────
-    try:
-        r = req_lib.get(real_url, headers=_PROXY_H, stream=True, timeout=20)
-        ct = r.headers.get("content-type", "video/mp4")
-
-        def _stream():
-            for chunk in r.iter_content(chunk_size=65536):
-                if chunk:
+    # ── Direct / MP4 stream: each seek = fresh async connection ───────────────
+    async def _body():
+        async with httpx.AsyncClient(follow_redirects=True) as c:
+            async with c.stream("GET", real_url, headers=h, timeout=30) as r:
+                async for chunk in r.aiter_bytes(65536):
                     yield chunk
 
-        return StreamingResponse(
-            _stream(),
-            media_type=ct,
-            headers={
-                "Accept-Ranges":              "bytes",
-                "Access-Control-Allow-Origin": "*",
-                "Content-Length":             r.headers.get("content-length", ""),
-            },
-        )
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as c:
+            head = await c.head(real_url, headers={**_PROXY_H}, timeout=10)
+        ct  = head.headers.get("content-type", "video/mp4")
+        out = {"Access-Control-Allow-Origin": "*", "Accept-Ranges": "bytes"}
+        for k in ("content-length", "content-range"):
+            if head.headers.get(k):
+                out[k.title()] = head.headers[k]
+        status = 206 if rang else 200
+        return StreamingResponse(_body(), status_code=status,
+                                 media_type=ct, headers=out)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
 
