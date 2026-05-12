@@ -11,6 +11,7 @@ import webview
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, Response
 import httpx
+import requests
 
 
 # ── Proxy headers (same as ani-cli / scraper) ─────────────────────────────────
@@ -23,7 +24,7 @@ from scraper import search_anime, get_episodes, get_best_stream, get_anilist_inf
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.expanduser("~/.ani-gui/history.db")
+DB_PATH  = os.path.expanduser("~/.config/ani-gui/history.db")
 UI_PATH  = os.path.join(BASE_DIR, "ui.html")
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -249,9 +250,12 @@ async def api_history_delete(item_id: int):
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 DEFAULTS = {
-    "hw_accel":      False,
-    "sub_lang":      "sub",
-    "player":        "web",   # "web" | "mpv"
+    "hw_accel":         False,
+    "sub_lang":         "sub",
+    "player":           "web",        # "web" | "mpv"
+    "theme":            "auto",
+    "performance_mode": "auto",
+    "accent_h":         239,
 }
 
 @app.get("/api/settings")
@@ -307,6 +311,9 @@ if __name__ == "__main__":
     threading.Thread(target=_run_server, daemon=True).start()
     time.sleep(1)   # let FastAPI start up
 
+    storage = os.path.expanduser("~/.config/ani-gui/webview")
+    os.makedirs(storage, exist_ok=True)
+
     window = webview.create_window(
         title="ani-gui",
         url="http://127.0.0.1:6969",
@@ -314,4 +321,4 @@ if __name__ == "__main__":
         height=800,
         min_size=(900, 600),
     )
-    webview.start(debug=False)
+    webview.start(debug=False, private_mode=False, storage_path=storage)
