@@ -7,11 +7,39 @@ ani-cli flow (mirrored exactly):
   get_episode_url() → APQ/POST → decode sources → 5 providers in parallel → best quality
 """
 import base64
+import collections
 import concurrent.futures
 import hashlib
 import re
+import time
 
-import requests
+# ── In-memory log buffer (read by /api/debug/log → shown in dev tab) ──────────
+_log_buffer: collections.deque = collections.deque(maxlen=200)
+
+def _log(level: str, msg: str) -> None:
+    entry = f"[{time.strftime('%H:%M:%S')}] {level}: {msg}"
+    _log_buffer.append(entry)
+
+def get_log_lines() -> list[str]:
+    return list(_log_buffer)
+
+def clear_logs() -> None:
+    _log_buffer.clear()
+
+# ── HTTP session: cloudscraper (Cloudflare bypass) → fallback to requests ─────
+# AllAnime is behind Cloudflare anti-bot; plain requests gets a TLS fingerprint
+# mismatch → 403. cloudscraper impersonates Chrome including JS challenge solving.
+# Install: pip install cloudscraper
+try:
+    import cloudscraper as _cs_mod
+    _session = _cs_mod.create_scraper(browser={"browser": "chrome", "platform": "linux", "mobile": False})
+    _log("INFO", "Using cloudscraper session (Cloudflare bypass active)")
+except ImportError:
+    import requests as _req_mod
+    _session = _req_mod.Session()
+    _log("WARN", "cloudscraper not installed — falling back to requests (may get 403 from Cloudflare). Run: pip install cloudscraper")
+
+import requests  # still used for AniList (not CF-protected)
 
 try:
     from Crypto.Cipher import AES
@@ -19,6 +47,7 @@ try:
     _HAS_AES = True
 except ImportError:
     _HAS_AES = False
+    _log("WARN", "pycryptodome not installed — tobeparsed decryption disabled. Run: pip install pycryptodome")
 
 # ── Setup — same variables as ani-cli ─────────────────────────────────────────
 
@@ -108,7 +137,7 @@ def _get_links(provider_path: str) -> list[str]:
     # ani-cli handles this as: case *fast4speed*) video_link="$1" ;;
     if provider_path.startswith('http'):
         try:
-            r     = requests.head(provider_path, headers=_H, timeout=10, allow_redirects=True)
+            r     = _session.head(provider_path, headers=_H, timeout=10, allow_redirects=True)
             final = r.url
             ct    = r.headers.get('content-type', '')
             if any(t in ct for t in ('video/', 'octet-stream')):
@@ -122,7 +151,7 @@ def _get_links(provider_path: str) -> list[str]:
     # Relative path → fetch from allanime.day
     url = f"https://{ALLANIME_BASE}{provider_path}"
     try:
-        resp = requests.get(url, headers=_H, timeout=12).text
+        resp = _session.get(url, headers=_H, timeout=12).text
 
         # sed -nE 's|.*link":"([^"]*)".*"resolutionStr":"([^"]*)".*|\2 >\1|p'
         raw_links = []
@@ -159,7 +188,7 @@ def _get_links(provider_path: str) -> list[str]:
             master = (raw_links[0].split('>')[-1]).strip()
             rel    = re.sub(r'[^/]*$', '', master)    # strip filename
             try:
-                m3u8 = requests.get(master, headers=_H, timeout=10).text
+                m3u8 = _session.get(master, headers=_H, timeout=10).text
                 if '#EXTM3U' in m3u8:
                     result, lines = [], m3u8.splitlines()
                     for i, ln in enumerate(lines):
@@ -191,7 +220,7 @@ def _get_filemoon_links(path: str) -> list[str]:
         return []
     url = f"https://{ALLANIME_BASE}{path}"
     try:
-        resp = requests.get(url, headers=_H, timeout=12).text
+        resp = _session.get(url, headers=_H, timeout=12).text
         flat = re.sub(r'\s+', '', resp)   # tr -d '\n '
 
         iv      = (re.search(r'"iv"\s*:\s*"([^"]+)"', flat) or [None,None])[1] or ''
@@ -281,33 +310,43 @@ def get_episode_url(anime_id: str, ep_no: str,
     apq    = f"{ALLANIME_API}/api?variables={_enc(q_vars)}&extensions={_enc(q_ext)}"
 
     api_resp = ''
+    _log("INFO", f"Stream request: id={anime_id} ep={ep_no} mode={mode}")
 
     # Try APQ first (ani-cli: curl -e "https://youtu-chan.com" ... "Origin: https://youtu-chan.com")
     try:
-        r = requests.get(apq, headers={
+        r = _session.get(apq, headers={
             'User-Agent': AGENT,
             'Origin':     'https://youtu-chan.com',
             'Referer':    'https://youtu-chan.com',
+            'Content-Type': 'application/json',
         }, timeout=12)
+        _log("INFO", f"APQ status={r.status_code} tobeparsed={'tobeparsed' in r.text} sourceUrl={'sourceUrl' in r.text} len={len(r.text)}")
         if r.ok:
             api_resp = r.text
-    except Exception:
-        pass
+        else:
+            _log("WARN", f"APQ non-ok: {r.status_code} body={r.text[:120]}")
+    except Exception as e:
+        _log("ERROR", f"APQ failed: {e}")
 
     # Fall back to POST if APQ gave nothing or no tobeparsed
     if not api_resp or ('tobeparsed' not in api_resp and 'sourceUrl' not in api_resp):
+        _log("INFO", "APQ had no usable data → trying POST fallback")
         try:
-            r = requests.post(f"{ALLANIME_API}/api",
+            r = _session.post(f"{ALLANIME_API}/api",
                 json={'variables': {'showId': anime_id, 'translationType': mode,
                                     'episodeString': ep_no},
                       'query': gql},
-                headers=_H, timeout=12)
+                headers={**_H, 'Content-Type': 'application/json'}, timeout=12)
+            _log("INFO", f"POST status={r.status_code} tobeparsed={'tobeparsed' in r.text} sourceUrl={'sourceUrl' in r.text}")
             if r.ok:
                 api_resp = r.text
-        except Exception:
-            pass
+            else:
+                _log("WARN", f"POST non-ok: {r.status_code} body={r.text[:120]}")
+        except Exception as e:
+            _log("ERROR", f"POST failed: {e}")
 
     if not api_resp:
+        _log("ERROR", "No API response — check network / cloudscraper installation")
         return None
 
     # Unescape JSON unicode (ani-cli: sed 's|\\u002F|\/|g')
@@ -319,7 +358,13 @@ def get_episode_url(anime_id: str, ep_no: str,
     if 'tobeparsed' in api_resp:
         m = re.search(r'"tobeparsed"\s*:\s*"([^"]+)"', api_resp)
         if m:
+            _log("INFO", f"Decoding tobeparsed blob len={len(m.group(1))} HAS_AES={_HAS_AES}")
             resp = _decode_tobeparsed(m.group(1))
+            _log("INFO", f"Decoded providers: {list(resp.keys()) or 'EMPTY — decryption failed'}")
+        else:
+            _log("WARN", "tobeparsed key found but regex failed to extract blob")
+    else:
+        _log("INFO", "No tobeparsed — parsing direct sourceUrls")
 
     if not resp:
         # Direct sourceUrls: sed -nE 's|.*sourceUrl":"--([^"]*)".*sourceName":"([^"]*)"|\2:\1|p'
@@ -328,8 +373,11 @@ def get_episode_url(anime_id: str, ep_no: str,
             url  = re.search(r'"sourceUrl"\s*:\s*"--([0-9a-fA-F]+)"', chunk)
             if name and url:
                 resp[name.group(1)] = url.group(1)
+        if resp:
+            _log("INFO", f"Direct sourceUrl providers: {list(resp.keys())}")
 
     if not resp:
+        _log("ERROR", f"No providers found. API preview: {api_resp[:200]}")
         return None
 
     # Run all 5 providers in parallel — mirrors ani-cli's & background jobs:
@@ -341,8 +389,10 @@ def get_episode_url(anime_id: str, ep_no: str,
             all_links.extend(f.result() or [])
 
     if not all_links:
+        _log("ERROR", "All 5 providers returned empty — no stream links found")
         return None
 
+    _log("INFO", f"Got {len(all_links)} links total. Best: {all_links[0][:80]}")
     # cat cache/* | sort -g -r -s  (sort by leading number, descending, stable)
     all_links.sort(
         key=lambda x: int(m.group(1)) if (m := re.match(r'^(\d+)', x)) else 0,
@@ -363,7 +413,7 @@ def search_anime(query: str, mode: str = 'sub') -> list:
            '{ shows( search: $search limit: $limit page: $page translationType: $translationType '
            'countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}')
     try:
-        r = requests.post(f"{ALLANIME_API}/api", headers=_H, timeout=12,
+        r = _session.post(f"{ALLANIME_API}/api", headers={**_H, 'Content-Type': 'application/json'}, timeout=12,
             json={'variables': {'search': {'allowAdult': False, 'allowUnknown': False,
                                             'query': query},
                                 'limit': 40, 'page': 1,
@@ -380,7 +430,7 @@ def search_anime(query: str, mode: str = 'sub') -> list:
 def get_episodes(anime_id: str, mode: str = 'sub') -> list:
     gql = 'query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}'
     try:
-        r = requests.post(f"{ALLANIME_API}/api", headers=_H, timeout=12,
+        r = _session.post(f"{ALLANIME_API}/api", headers={**_H, 'Content-Type': 'application/json'}, timeout=12,
             json={'variables': {'showId': anime_id}, 'query': gql})
         if r.ok:
             eps = (r.json().get('data', {}).get('show', {})

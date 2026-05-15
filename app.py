@@ -19,7 +19,7 @@ _PROXY_H = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
     "Referer":    "https://allanime.to",
 }
-from scraper import search_anime, get_episodes, get_best_stream, get_anilist_info
+from scraper import search_anime, get_episodes, get_best_stream, get_anilist_info, get_log_lines, clear_logs
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -33,17 +33,55 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+
+    # ── Migration: per-episode → per-anime history ─────────────────────────────
+    # Old schema had UNIQUE(anime_id, episode); new has UNIQUE(anime_id).
+    _hist_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='history'"
+    ).fetchone()
+    hist_sql = (_hist_row[0] if _hist_row else "") or ""
+    if "anime_id, episode" in hist_sql:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS history_v2 (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                anime_id     TEXT NOT NULL UNIQUE,
+                anime_title  TEXT NOT NULL,
+                episode      TEXT NOT NULL,
+                progress     REAL DEFAULT 0,
+                duration     REAL DEFAULT 0,
+                thumbnail    TEXT DEFAULT '',
+                last_watched DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT OR IGNORE INTO history_v2
+                (anime_id, anime_title, episode, progress, duration, thumbnail, last_watched)
+            SELECT h.anime_id, h.anime_title, h.episode, h.progress, h.duration, h.thumbnail, h.last_watched
+            FROM history h
+            INNER JOIN (
+                SELECT anime_id, MAX(CAST(episode AS REAL)) AS max_ep
+                FROM history GROUP BY anime_id
+            ) best ON h.anime_id = best.anime_id
+                   AND CAST(h.episode AS REAL) = best.max_ep;
+            DROP TABLE history;
+            ALTER TABLE history_v2 RENAME TO history;
+        """)
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS history (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            anime_id        TEXT NOT NULL,
-            anime_title     TEXT NOT NULL,
-            episode         TEXT NOT NULL,
-            progress        REAL DEFAULT 0,
-            duration        REAL DEFAULT 0,
-            thumbnail       TEXT DEFAULT '',
-            last_watched    DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(anime_id, episode)
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            anime_id     TEXT NOT NULL UNIQUE,
+            anime_title  TEXT NOT NULL,
+            episode      TEXT NOT NULL,
+            progress     REAL DEFAULT 0,
+            duration     REAL DEFAULT 0,
+            thumbnail    TEXT DEFAULT '',
+            last_watched DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            anime_id     TEXT NOT NULL UNIQUE,
+            anime_title  TEXT NOT NULL,
+            thumbnail    TEXT DEFAULT '',
+            added_at     DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
@@ -226,9 +264,17 @@ async def api_history_upsert(req: Request):
     conn.execute("""
         INSERT INTO history (anime_id, anime_title, episode, progress, duration, thumbnail)
         VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(anime_id, episode) DO UPDATE SET
-            progress     = excluded.progress,
-            duration     = excluded.duration,
+        ON CONFLICT(anime_id) DO UPDATE SET
+            anime_title  = excluded.anime_title,
+            thumbnail    = CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail
+                                ELSE history.thumbnail END,
+            -- Only advance to a higher (or equal) episode number, never go backwards
+            episode      = CASE WHEN CAST(excluded.episode AS REAL) >= CAST(history.episode AS REAL)
+                                THEN excluded.episode ELSE history.episode END,
+            progress     = CASE WHEN CAST(excluded.episode AS REAL) >= CAST(history.episode AS REAL)
+                                THEN excluded.progress ELSE history.progress END,
+            duration     = CASE WHEN CAST(excluded.episode AS REAL) >= CAST(history.episode AS REAL)
+                                THEN excluded.duration ELSE history.duration END,
             last_watched = CURRENT_TIMESTAMP
     """, (
         data["anime_id"], data["anime_title"], data["episode"],
@@ -243,6 +289,45 @@ async def api_history_upsert(req: Request):
 async def api_history_delete(item_id: int):
     conn = db()
     conn.execute("DELETE FROM history WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True})
+
+# ── Bookmarks ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/bookmarks")
+async def api_bookmarks_list():
+    conn = db()
+    rows = conn.execute("SELECT * FROM bookmarks ORDER BY added_at DESC").fetchall()
+    conn.close()
+    return JSONResponse([dict(r) for r in rows])
+
+@app.get("/api/bookmarks/{anime_id}")
+async def api_bookmarks_check(anime_id: str):
+    conn = db()
+    row = conn.execute("SELECT id FROM bookmarks WHERE anime_id=?", (anime_id,)).fetchone()
+    conn.close()
+    return JSONResponse({"bookmarked": row is not None})
+
+@app.post("/api/bookmarks")
+async def api_bookmarks_add(req: Request):
+    data = await req.json()
+    conn = db()
+    try:
+        conn.execute(
+            "INSERT INTO bookmarks (anime_id, anime_title, thumbnail) VALUES (?,?,?)",
+            (data["anime_id"], data["anime_title"], data.get("thumbnail", ""))
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass  # already bookmarked
+    conn.close()
+    return JSONResponse({"ok": True})
+
+@app.delete("/api/bookmarks/{anime_id}")
+async def api_bookmarks_delete(anime_id: str):
+    conn = db()
+    conn.execute("DELETE FROM bookmarks WHERE anime_id=?", (anime_id,))
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True})
@@ -277,6 +362,17 @@ async def api_settings_save(req: Request):
         )
     conn.commit()
     conn.close()
+    return JSONResponse({"ok": True})
+
+# ── Debug log endpoint ───────────────────────────────────────────────────────
+
+@app.get("/api/debug/log")
+async def api_debug_log():
+    return JSONResponse({"lines": get_log_lines()})
+
+@app.post("/api/debug/log/clear")
+async def api_debug_log_clear():
+    clear_logs()
     return JSONResponse({"ok": True})
 
 # ── MPV launcher ──────────────────────────────────────────────────────────────
